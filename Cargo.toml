@@ -1,0 +1,12 @@
+[package]
+name = "zettai-ryouiki"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = { version = "0.11", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+bytes = "1.1.0"
+futures = "0.3.19"
+structopt = "0.3.25"
