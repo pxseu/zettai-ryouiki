@@ -8,7 +8,7 @@
 
 ## About
 
-This is a pixiv dowloader written in rust. Uses async code and should be relatively fast, althrough it might struggle with many files.
+Pixiv downloader written in rust. Uses async code and should be relatively fast, althrough it might struggle with multiple downloads of images.
 
 ## TODO:
 
