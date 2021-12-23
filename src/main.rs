@@ -21,7 +21,7 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<(), ()> {
-    let args = <Cli as structopt::StructOpt>::from_args();
+    let args = Cli::from_args();
 
     let client = reqwest::Client::new();
 
@@ -34,13 +34,19 @@ async fn main() -> Result<(), ()> {
         )
         .await
         .unwrap();
+
+        return Ok(());
     }
 
     if !args.user.is_none() {
         pixiv::download_user(client, args.user.unwrap(), args.cookie)
             .await
             .unwrap();
+
+        return Ok(());
     }
+
+    Cli::clap().print_help().unwrap();
 
     Ok(())
 }
