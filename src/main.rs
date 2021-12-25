@@ -1,5 +1,6 @@
 use structopt::StructOpt;
 
+mod logger;
 mod pixiv;
 mod utils;
 

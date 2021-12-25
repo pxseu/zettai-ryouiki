@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::{collections::HashMap, io::Error};
 use tokio::fs;
 
-use super::utils;
+use super::{logger, utils};
 
 #[derive(Deserialize, Debug)]
 pub struct Urls {
@@ -71,10 +71,15 @@ async fn fetch_and_save(
     cookie: Option<String>,
 ) -> Result<(), Error> {
     if fs::metadata(path.clone()).await.is_ok() {
+        logger::log(format!("{} already exists", path));
         return Ok(());
     }
 
+    logger::log(format!("Downloading {}", path));
+
     let bytes = fetch_image(client, url, cookie).await.unwrap();
+
+    logger::log(format!("Saving {}", path));
 
     fs::write(path, bytes).await?;
 
@@ -91,13 +96,18 @@ pub async fn download_image(
         .await
         .unwrap();
 
+    logger::log(format!(
+        "Fetching images of {} ({} pages)",
+        illust_id, illust.page_count
+    ));
+
     let base_url = utils::get_base_path(illust.urls.original.clone());
 
     let ext = utils::get_ext(illust.urls.original.clone());
 
     let full_path = match base_path {
-        Some(path) => format!("{}/{}", path, illust_id.clone()),
-        None => illust_id.clone(),
+        Some(path) => format!("u_{}/i_{}", path, illust_id.clone()),
+        None => format!("i_{}", illust_id.clone()),
     };
 
     fs::create_dir_all(full_path.clone()).await.unwrap();
@@ -106,20 +116,18 @@ pub async fn download_image(
 
     for i in 0..=illust.page_count - 1 {
         let url = format!("{}/{}_p{}.{}", base_url, illust_id, i, ext);
-        let path = format!("i_{}/p{}.{}", full_path, i, ext);
+        let path = format!("{}/p{}.{}", full_path, i, ext);
 
         let download = fetch_and_save(client.clone(), url, path, cookie.clone());
         downloads.push(download);
     }
-
-    println!("Downloading {}...", full_path);
 
     futures::future::join_all(downloads)
         .await
         .into_iter()
         .for_each(|r| r.unwrap());
 
-    println!("Done! {}", full_path);
+    logger::log(format!("Done! {}", full_path));
 
     Ok(())
 }
@@ -148,13 +156,17 @@ pub async fn download_user(
         let task = download_image(
             client.clone(),
             key.to_string(),
-            Some(format!("u_{}", user_id)),
+            Some(user_id.clone()),
             cookie.clone(),
         );
         illusts.push(task);
     }
 
-    println!("Downloading {}'s images, total: {}", user_id, illusts.len());
+    logger::log(format!(
+        "Downloading {}'s images, total: {}",
+        user_id,
+        illusts.len()
+    ));
 
     futures::future::join_all(illusts.into_iter().rev())
         .await
