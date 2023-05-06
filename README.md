@@ -8,22 +8,25 @@
 
 ## About
 
-Pixiv downloader written in rust. Uses async code and should be relatively fast, althrough it might struggle with multiple downloads of images.
+Pixiv downloader written in Rust. Uses async code and should be relatively fast, although it might struggle with a large amount of images.
 
 ## TODO:
 
--   [x] Download all illusts image per id
--   [x] Add support for user illusts
--   [x] Support for cookier auth with R18/sensitive images
--   [ ] Retry on error
--   [ ] Add support for bookmarks
--   [ ] Limit how many images to download
+- [x] Download all illustrations images per id
+- [x] Add support for user/author illustrations downloads
+- [x] Support for cookie auth for R18/sensitive images
+- [x] Download Pixiv Ugoira animated illustrations
+- [ ] Try not to get rate limited (lol)
+- [ ] Animate Ugoira images (maybe)
+- [ ] Retry on error
+- [ ] Add support for bookmarks
+- [ ] Limit how many images to download
 
 ## Contributing
 
 1.  Fork the repo on GitHub
-2.  Clone the project to your own machine
-3.  Commit changes to your own branch
+2.  Clone the project to your machine
+3.  Commit changes to your branch
 4.  Push your work to your fork
 5.  Submit a Pull request so that I can review your changes
 

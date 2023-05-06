@@ -1,177 +1,206 @@
-use bytes::Bytes;
-use serde::Deserialize;
-use std::{collections::HashMap, io::Error};
+use anyhow::{anyhow, bail, Context, Result};
 use tokio::fs;
 
+use super::types::{Illust, Response, Ugoira, User};
 use super::{logger, utils};
 
-#[derive(Deserialize, Debug)]
-pub struct Urls {
-    original: String,
-}
+const BASE_HOSTNAME: &str = "www.pixiv.net";
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
+                          AppleWebKit/537.36 (KHTML, like Gecko) \
+                          Chrome/80.0.3987.132 Safari/537.36";
 
-#[derive(Deserialize, Debug)]
-pub struct Response<T> {
-    pub error: bool,
-    pub body: T,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct Illust {
-    #[serde(rename = "pageCount")]
-    pub page_count: u32,
-    pub title: String,
-    pub id: String,
-    pub urls: Urls,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct User {
-    illusts: HashMap<String, Option<Illust>>,
-}
-
-async fn get_illust(
+#[derive(Debug, Clone)]
+pub struct Pixiv {
     client: reqwest::Client,
-    illust_id: String,
-    cookie: Option<String>,
-) -> Result<Illust, Error> {
-    let url = format!("https://www.pixiv.net/ajax/illust/{}", illust_id);
-    let res = client
-        .get(url)
-        .headers(utils::get_headers(cookie))
-        .send()
-        .await
-        .unwrap();
-    let res = res.json::<Response<Illust>>().await.unwrap();
-
-    Ok(res.body)
 }
 
-async fn fetch_image(
-    client: reqwest::Client,
-    url: String,
-    cookie: Option<String>,
-) -> Result<Bytes, Error> {
-    let res = client
-        .get(url.clone())
-        .headers(utils::get_headers(cookie.clone()))
-        .send()
-        .await
-        .unwrap();
-
-    let result = res.bytes().await.unwrap();
-
-    Ok(result)
-}
-
-async fn fetch_and_save(
-    client: reqwest::Client,
-    url: String,
-    path: String,
-    cookie: Option<String>,
-) -> Result<(), Error> {
-    if fs::metadata(path.clone()).await.is_ok() {
-        logger::log(format!("{} already exists", path));
-        return Ok(());
+impl Default for Pixiv {
+    fn default() -> Self {
+        Self::new(None).unwrap()
     }
-
-    logger::log(format!("Downloading {}", path));
-
-    let bytes = fetch_image(client, url, cookie).await.unwrap();
-
-    logger::log(format!("Saving {}", path));
-
-    fs::write(path, bytes).await?;
-
-    Ok(())
 }
 
-pub async fn download_image(
-    client: reqwest::Client,
-    illust_id: String,
-    base_path: Option<String>,
-    cookie: Option<String>,
-) -> Result<(), Error> {
-    let illust = get_illust(client.clone(), illust_id.clone(), cookie.clone())
-        .await
-        .unwrap();
+impl Pixiv {
+    pub fn new(cookie: Option<String>) -> Result<Self> {
+        use reqwest::header::{HeaderMap, HeaderValue};
 
-    logger::log(format!(
-        "Fetching images of {} ({} pages)",
-        illust_id, illust.page_count
-    ));
+        let mut headers = HeaderMap::new();
 
-    let base_url = utils::get_base_path(illust.urls.original.clone());
-
-    let ext = utils::get_ext(illust.urls.original.clone());
-
-    let full_path = match base_path {
-        Some(path) => format!("u_{}/i_{}", path, illust_id.clone()),
-        None => format!("i_{}", illust_id.clone()),
-    };
-
-    fs::create_dir_all(full_path.clone()).await.unwrap();
-
-    let mut downloads = Vec::new();
-
-    for i in 0..=illust.page_count - 1 {
-        let url = format!("{}/{}_p{}.{}", base_url, illust_id, i, ext);
-        let path = format!("{}/p{}.{}", full_path, i, ext);
-
-        let download = fetch_and_save(client.clone(), url, path, cookie.clone());
-        downloads.push(download);
-    }
-
-    futures::future::join_all(downloads)
-        .await
-        .into_iter()
-        .for_each(|r| r.unwrap());
-
-    logger::log(format!("Done! {}", full_path));
-
-    Ok(())
-}
-
-pub async fn download_user(
-    client: reqwest::Client,
-    user_id: String,
-    cookie: Option<String>,
-) -> Result<(), Error> {
-    let url = format!(
-        "https://www.pixiv.net/ajax/user/{}/profile/all",
-        user_id.clone()
-    );
-
-    let res = client
-        .get(url)
-        .headers(utils::get_headers(cookie.clone()))
-        .send()
-        .await
-        .unwrap();
-    let res = res.json::<Response<User>>().await.unwrap();
-
-    let mut illusts = Vec::new();
-
-    for (key, _) in res.body.illusts.iter() {
-        let task = download_image(
-            client.clone(),
-            key.to_string(),
-            Some(user_id.clone()),
-            cookie.clone(),
+        headers.insert("user-agent", HeaderValue::from_str(USER_AGENT)?);
+        headers.insert("authority", HeaderValue::from_str(BASE_HOSTNAME)?);
+        headers.insert(
+            "referer",
+            HeaderValue::from_str(&format!("https://{BASE_HOSTNAME}/"))?,
         );
-        illusts.push(task);
+
+        if let Some(cookie) = cookie {
+            headers.insert("cookie", HeaderValue::from_str(cookie.as_str())?);
+        }
+
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()?;
+
+        Ok(Pixiv { client })
     }
 
-    logger::log(format!(
-        "Downloading {}'s images, total: {}",
-        user_id,
-        illusts.len()
-    ));
+    pub async fn download_image(&self, illust_id: &str, author: Option<String>) -> Result<()> {
+        let illust = self.get_illust(illust_id.clone()).await?;
 
-    futures::future::join_all(illusts.into_iter().rev())
-        .await
-        .into_iter()
-        .for_each(|r| r.unwrap());
+        logger::log(format!(
+            "Fetching images of {illust_id} ({} pages)",
+            illust.page_count
+        ));
 
-    Ok(())
+        let base_url = utils::get_base_path(illust.urls.original.clone());
+
+        let ext = utils::get_ext(illust.urls.original.clone());
+
+        let full_path = match author {
+            Some(path) => format!("u_{path}/i_{illust_id}"),
+            None => format!("i_{illust_id}"),
+        };
+
+        fs::create_dir_all(full_path.clone()).await?;
+
+        match illust.illust_type {
+            // map each page to a future that downloads the image
+            0 => {
+                let downloads = (0..=illust.page_count - 1).into_iter().map(|page| {
+                    self.fetch_and_save_image(
+                        format!("{base_url}/{illust_id}_p{page}.{ext}"),
+                        format!("{full_path}/p{page}.{ext}"),
+                    )
+                });
+
+                for task in futures::future::join_all(downloads).await.into_iter() {
+                    if let Err(e) = task {
+                        logger::log(format!("{e:?}"));
+                    }
+                }
+            }
+
+            2 => {
+                let (first, second) = tokio::join!(
+                    self.fetch_and_save_image(
+                        illust.urls.original,
+                        format!("{full_path}/thumbnail.{ext}"),
+                    ),
+                    self.fetch_and_save_ugoira(
+                        illust_id,
+                        format!("{full_path}/{illust_id}_ugoira1920x1080.zip"),
+                    ),
+                );
+
+                first?;
+                second?;
+            }
+
+            _ => bail!("Unsupported illust type: {}, skipping", illust.illust_type),
+        };
+
+        logger::log(format!("Done! {full_path}"));
+
+        Ok(())
+    }
+
+    pub async fn download_user(&self, user_id: &str) -> Result<()> {
+        let res = self
+            .client
+            .get(format!(
+                "https://www.pixiv.net/ajax/user/{user_id}/profile/all",
+            ))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Response<User>>()
+            .await?;
+
+        let illusts = res
+            .body
+            .illusts
+            .keys()
+            .map(|illust_id| self.download_image(illust_id, Some(user_id.to_string())));
+
+        logger::log(format!(
+            "Downloading {user_id}'s images, total: {}",
+            illusts.len()
+        ));
+
+        for task in futures::future::join_all(illusts).await.into_iter() {
+            if let Err(e) = task {
+                logger::log(format!("{e:?}"));
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn fetch_and_save_ugoira(&self, ugoira_id: &str, path: String) -> Result<()> {
+        let data = self.get_ugoira_meta(ugoira_id).await?;
+
+        self.fetch_and_save_image(data.original_src, path)
+            .await
+            .context("Failed to download ugoira zip")
+    }
+
+    async fn fetch_and_save_image(&self, url: String, path: String) -> Result<()> {
+        if fs::metadata(&path).await.is_ok() {
+            logger::log(format!("{path} already exists, skipping"));
+            return Ok(());
+        }
+
+        logger::log(format!("Downloading {path}"));
+
+        let bytes = self.fetch_bytes(&url).await?;
+
+        logger::log(format!("Saving {path}"));
+
+        fs::write(path, bytes).await?;
+
+        Ok(())
+    }
+
+    async fn get_ugoira_meta(&self, ugoira_id: &str) -> Result<Ugoira> {
+        let data = self
+            .client
+            .get(format!(
+                "https://www.pixiv.net/ajax/illust/{ugoira_id}/ugoira_meta?lang=en",
+            ))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Response<Ugoira>>()
+            .await?
+            .body;
+
+        Ok(data)
+    }
+
+    async fn get_illust(&self, illust_id: &str) -> Result<Illust> {
+        let data = self
+            .client
+            .get(format!("https://www.pixiv.net/ajax/illust/{illust_id}"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Response<Illust>>()
+            .await
+            .with_context(|| anyhow!("Failed to get illust: {illust_id}"))?;
+
+        Ok(data.body)
+    }
+
+    async fn fetch_bytes(&self, url: &str) -> Result<Vec<u8>> {
+        let data = self
+            .client
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?;
+
+        Ok(data.to_vec())
+    }
 }
